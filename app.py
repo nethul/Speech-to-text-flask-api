@@ -1,4 +1,5 @@
 import os
+import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google.cloud import speech_v2
@@ -14,6 +15,20 @@ CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), 'service_account.json
 PROJECT_ID = 'plexiform-bot-479517-t4' # Taken from previous frontend code
 
 def get_speech_client():
+    # Check for credentials in environment variable (for Heroku)
+    google_credentials_json = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+    
+    if google_credentials_json:
+        try:
+            credentials_info = json.loads(google_credentials_json)
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            return speech_v2.SpeechClient(credentials=credentials)
+        except json.JSONDecodeError:
+            print("Error: GOOGLE_CREDENTIALS_JSON is not valid JSON.")
+            # Fallback or raise error? Let's fallback to file check.
+            pass
+    
+    # Fallback to file
     if os.path.exists(CREDENTIALS_PATH):
         credentials = service_account.Credentials.from_service_account_file(CREDENTIALS_PATH)
         return speech_v2.SpeechClient(credentials=credentials)
