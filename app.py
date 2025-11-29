@@ -67,7 +67,7 @@ def transcribe_audio():
         config = speech_v2.types.RecognitionConfig(
             auto_decoding_config=speech_v2.types.AutoDetectDecodingConfig(),
             language_codes=["si-LK"],
-            model="gemini-2.5-flash-tts",
+            model="short",
         )
         
         request_obj = speech_v2.types.RecognizeRequest(
@@ -119,9 +119,10 @@ def text_to_speech():
         input_text = texttospeech.SynthesisInput(text=text)
 
         # Note: Standard voice for Sinhala might be limited. 
-        # Using a standard voice if available, or just language code.
+        # Using the requested model.
         voice = texttospeech.VoiceSelectionParams(
             language_code="si-LK",
+            name="gemini-2.5-flash-tts",
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
         )
 
