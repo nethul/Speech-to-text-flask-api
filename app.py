@@ -1,8 +1,10 @@
 import os
 import json
+import base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google.cloud import speech_v2
+from google.cloud import texttospeech
 from google.oauth2 import service_account
 
 app = Flask(__name__)
@@ -14,27 +16,35 @@ CORS(app)
 CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), 'service_account.json')
 PROJECT_ID = 'plexiform-bot-479517-t4' # Taken from previous frontend code
 
-def get_speech_client():
+def get_credentials():
     # Check for credentials in environment variable (for Heroku)
     google_credentials_json = os.environ.get('GOOGLE_CREDENTIALS_JSON')
     
     if google_credentials_json:
         try:
             credentials_info = json.loads(google_credentials_json)
-            credentials = service_account.Credentials.from_service_account_info(credentials_info)
-            return speech_v2.SpeechClient(credentials=credentials)
+            return service_account.Credentials.from_service_account_info(credentials_info)
         except json.JSONDecodeError:
             print("Error: GOOGLE_CREDENTIALS_JSON is not valid JSON.")
-            # Fallback or raise error? Let's fallback to file check.
             pass
     
     # Fallback to file
     if os.path.exists(CREDENTIALS_PATH):
-        credentials = service_account.Credentials.from_service_account_file(CREDENTIALS_PATH)
+        return service_account.Credentials.from_service_account_file(CREDENTIALS_PATH)
+    
+    return None
+
+def get_speech_client():
+    credentials = get_credentials()
+    if credentials:
         return speech_v2.SpeechClient(credentials=credentials)
-    else:
-        # Fallback to default credentials if file not found (e.g. env var)
-        return speech_v2.SpeechClient()
+    return speech_v2.SpeechClient()
+
+def get_tts_client():
+    credentials = get_credentials()
+    if credentials:
+        return texttospeech.TextToSpeechClient(credentials=credentials)
+    return texttospeech.TextToSpeechClient()
 
 @app.route('/transcribe', methods=['POST'])
 def transcribe_audio():
@@ -50,39 +60,10 @@ def transcribe_audio():
         
         content = file.read()
         
-        # Determine encoding based on filename extension or default
-        # Note: The frontend sends base64, but here we receive a file upload (multipart/form-data)
-        # So 'content' is bytes.
-        
-        # For V2, we need to specify the recognizer. 
-        # We'll use the global recognizer for simplicity or create one if needed.
-        # V2 requires a recognizer resource name.
-        # Format: projects/{project}/locations/{location}/recognizers/{recognizer}
-        # We can use the default recognizer ID or a specific one.
-        # Let's try using a standard one or create one on the fly if needed? 
-        # Actually, V2 usually requires creating a recognizer first.
-        # However, for simplicity, let's assume we can use a standard configuration 
-        # or we might need to use V1 if V2 is too complex for a quick setup without pre-configuration.
-        # The user specifically asked for V2.
-        
         location = "global"
-        recognizer_id = "sinhala-recognizer" # We might need to create this once
+        recognizer_id = "sinhala-recognizer"
         recognizer_path = client.recognizer_path(PROJECT_ID, location, recognizer_id)
 
-        # In a real app, you'd ensure the recognizer exists. 
-        # For now, let's try to list or get it, or just use it and see.
-        # If it doesn't exist, we should probably create it.
-        
-        # Let's try a simpler approach first: Just config in the request if possible?
-        # V2 API is strictly resource-based.
-        
-        # Let's assume we need to create a recognizer if it doesn't exist.
-        # But creating it every time is inefficient.
-        # Let's try to just use a dynamic config if possible, or fallback to V1 if V2 is too hard?
-        # No, user asked for V2.
-        
-        # Let's try to use the inline config if supported, or just create a recognizer.
-        
         config = speech_v2.types.RecognitionConfig(
             auto_decoding_config=speech_v2.types.AutoDetectDecodingConfig(),
             language_codes=["si-LK"],
@@ -95,12 +76,10 @@ def transcribe_audio():
             content=content,
         )
         
-        # We might need to create the recognizer first if it doesn't exist.
-        # Let's add a check/create logic.
+        # Check/Create recognizer logic
         try:
             client.get_recognizer(name=recognizer_path)
         except Exception:
-            # Create recognizer
             print(f"Creating recognizer: {recognizer_id}")
             recognizer_request = speech_v2.types.CreateRecognizerRequest(
                 parent=f"projects/{PROJECT_ID}/locations/{location}",
@@ -124,6 +103,43 @@ def transcribe_audio():
 
     except Exception as e:
         print(f"Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/tts', methods=['POST'])
+def text_to_speech():
+    data = request.get_json()
+    if not data or 'text' not in data:
+        return jsonify({'error': 'No text provided'}), 400
+    
+    text = data['text']
+
+    try:
+        client = get_tts_client()
+
+        input_text = texttospeech.SynthesisInput(text=text)
+
+        # Note: Standard voice for Sinhala might be limited. 
+        # Using a standard voice if available, or just language code.
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="si-LK",
+            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+        )
+
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3
+        )
+
+        response = client.synthesize_speech(
+            input=input_text, voice=voice, audio_config=audio_config
+        )
+
+        # Return base64 encoded audio
+        audio_content = base64.b64encode(response.audio_content).decode('utf-8')
+        
+        return jsonify({'audioContent': audio_content})
+
+    except Exception as e:
+        print(f"Error in TTS: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
