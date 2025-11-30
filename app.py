@@ -122,7 +122,6 @@ def text_to_speech():
         # Using the requested model.
         voice = texttospeech.VoiceSelectionParams(
             language_code="si-LK",
-            name="gemini-2.5-flash-tts",
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
         )
 
@@ -142,6 +141,51 @@ def text_to_speech():
     except Exception as e:
         print(f"Error in TTS: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/stream_tts', methods=['POST'])
+def stream_text_to_speech():
+    data = request.get_json()
+    if not data or 'text' not in data:
+        return jsonify({'error': 'No text provided'}), 400
+    
+    text = data['text']
+
+    def generate():
+        try:
+            client = get_tts_client()
+            
+            # Use the same voice as the standard TTS
+            streaming_config = texttospeech.StreamingSynthesizeConfig(
+                voice=texttospeech.VoiceSelectionParams(
+                    language_code="si-LK",
+                    name="gemini-2.5-flash-tts",
+                    ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+                )
+            )
+
+            def request_generator():
+                # First request must contain config
+                yield texttospeech.StreamingSynthesizeRequest(
+                    streaming_config=streaming_config
+                )
+                # Subsequent requests contain text
+                yield texttospeech.StreamingSynthesizeRequest(
+                    input=texttospeech.StreamingSynthesisInput(text=text)
+                )
+
+            streaming_responses = client.streaming_synthesize(request_generator())
+
+            for response in streaming_responses:
+                if response.audio_content:
+                    yield response.audio_content
+
+        except Exception as e:
+            print(f"Error in Streaming TTS: {e}")
+            # In a generator, we can't easily return a JSON error response once streaming starts
+            # But we can log it.
+            pass
+
+    return app.response_class(generate(), mimetype='audio/mpeg')
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
