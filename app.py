@@ -1,11 +1,15 @@
 import os
 import json
 import base64
+import struct
+import mimetypes
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google.cloud import speech_v2
 from google.cloud import texttospeech
 from google.oauth2 import service_account
+from google import genai
+from google.genai import types
 
 app = Flask(__name__)
 CORS(app)
@@ -105,6 +109,58 @@ def transcribe_audio():
         print(f"Error: {e}")
         return jsonify({'error': str(e)}), 500
 
+def convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
+    """Generates a WAV file header for the given audio data and parameters."""
+    parameters = parse_audio_mime_type(mime_type)
+    bits_per_sample = parameters["bits_per_sample"]
+    sample_rate = parameters["rate"]
+    num_channels = 1
+    data_size = len(audio_data)
+    bytes_per_sample = bits_per_sample // 8
+    block_align = num_channels * bytes_per_sample
+    byte_rate = sample_rate * block_align
+    chunk_size = 36 + data_size
+
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",          # ChunkID
+        chunk_size,       # ChunkSize
+        b"WAVE",          # Format
+        b"fmt ",          # Subchunk1ID
+        16,               # Subchunk1Size (16 for PCM)
+        1,                # AudioFormat (1 for PCM)
+        num_channels,     # NumChannels
+        sample_rate,      # SampleRate
+        byte_rate,        # ByteRate
+        block_align,      # BlockAlign
+        bits_per_sample,  # BitsPerSample
+        b"data",          # Subchunk2ID
+        data_size         # Subchunk2Size
+    )
+    return header + audio_data
+
+def parse_audio_mime_type(mime_type: str) -> dict:
+    """Parses bits per sample and rate from an audio MIME type string."""
+    bits_per_sample = 16
+    rate = 24000
+
+    parts = mime_type.split(";")
+    for param in parts:
+        param = param.strip()
+        if param.lower().startswith("rate="):
+            try:
+                rate_str = param.split("=", 1)[1]
+                rate = int(rate_str)
+            except (ValueError, IndexError):
+                pass
+        elif param.startswith("audio/L"):
+            try:
+                bits_per_sample = int(param.split("L", 1)[1])
+            except (ValueError, IndexError):
+                pass
+
+    return {"bits_per_sample": bits_per_sample, "rate": rate}
+
 @app.route('/tts', methods=['POST'])
 def text_to_speech():
     data = request.get_json()
@@ -114,28 +170,63 @@ def text_to_speech():
     text = data['text']
 
     try:
-        client = get_tts_client()
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+             return jsonify({'error': 'GOOGLE_API_KEY not found'}), 500
 
-        input_text = texttospeech.SynthesisInput(text=text)
+        client = genai.Client(api_key=api_key)
 
-        # Note: Standard voice for Sinhala might be limited. 
-        # Using the requested model.
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="si-LK",
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+        model = "gemini-2.5-flash-preview-tts"
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=text),
+                ],
+            ),
+        ]
+        generate_content_config = types.GenerateContentConfig(
+            temperature=1,
+            response_modalities=["audio"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name="Zephyr"
+                    )
+                )
+            ),
         )
 
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
-        )
+        combined_audio_data = b""
+        last_mime_type = "audio/wav"
 
-        response = client.synthesize_speech(
-            input=input_text, voice=voice, audio_config=audio_config
-        )
-
-        # Return base64 encoded audio
-        audio_content = base64.b64encode(response.audio_content).decode('utf-8')
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if (
+                chunk.candidates is None
+                or chunk.candidates[0].content is None
+                or chunk.candidates[0].content.parts is None
+            ):
+                continue
+            
+            part = chunk.candidates[0].content.parts[0]
+            if part.inline_data and part.inline_data.data:
+                combined_audio_data += part.inline_data.data
+                last_mime_type = part.inline_data.mime_type
         
+        if not combined_audio_data:
+            return jsonify({'error': 'No audio generated'}), 500
+
+        final_audio = combined_audio_data
+        file_extension = mimetypes.guess_extension(last_mime_type)
+        
+        if file_extension is None or file_extension == ".bin":
+             final_audio = convert_to_wav(combined_audio_data, last_mime_type)
+
+        audio_content = base64.b64encode(final_audio).decode('utf-8')
         return jsonify({'audioContent': audio_content})
 
     except Exception as e:

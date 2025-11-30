@@ -3,3 +3,4 @@ flask-cors
 google-cloud-speech
 gunicorn
 google-cloud-texttospeech
+google-generativeai
