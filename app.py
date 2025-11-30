@@ -67,7 +67,7 @@ def transcribe_audio():
         config = speech_v2.types.RecognitionConfig(
             auto_decoding_config=speech_v2.types.AutoDetectDecodingConfig(),
             language_codes=["si-LK"],
-            model="short",
+            model="long",
         )
         
         request_obj = speech_v2.types.RecognizeRequest(
@@ -141,70 +141,6 @@ def text_to_speech():
     except Exception as e:
         print(f"Error in TTS: {e}")
         return jsonify({'error': str(e)}), 500
-
-import uuid
-
-# ... (existing imports)
-
-# Simple in-memory cache for streaming text
-STREAM_CACHE = {}
-
-@app.route('/stream_tts', methods=['POST'])
-def init_stream_tts():
-    data = request.get_json()
-    if not data or 'text' not in data:
-        return jsonify({'error': 'No text provided'}), 400
-    
-    text = data['text']
-    stream_id = str(uuid.uuid4())
-    STREAM_CACHE[stream_id] = text
-    
-    return jsonify({'streamId': stream_id})
-
-@app.route('/stream_tts/<stream_id>', methods=['GET'])
-def stream_audio(stream_id):
-    text = STREAM_CACHE.get(stream_id)
-    if not text:
-        return jsonify({'error': 'Stream ID not found or expired'}), 404
-
-    # Optional: Remove from cache immediately or use a better expiration strategy
-    # For now, we keep it to allow retries or multiple chunks if needed, 
-    # but strictly this should be managed. 
-    # To prevent memory leaks in a real app, use a TTL cache (e.g. cachetools).
-    # For this demo, we'll pop it to keep memory clean, assuming one-time play.
-    STREAM_CACHE.pop(stream_id, None)
-
-    def generate():
-        try:
-            client = get_tts_client()
-            
-            streaming_config = texttospeech.StreamingSynthesizeConfig(
-                voice=texttospeech.VoiceSelectionParams(
-                    language_code="si-LK",
-                    name="gemini-2.5-flash-tts",
-                    ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-                )
-            )
-
-            def request_generator():
-                yield texttospeech.StreamingSynthesizeRequest(
-                    streaming_config=streaming_config
-                )
-                yield texttospeech.StreamingSynthesizeRequest(
-                    input=texttospeech.StreamingSynthesisInput(text=text)
-                )
-
-            streaming_responses = client.streaming_synthesize(request_generator())
-
-            for response in streaming_responses:
-                if response.audio_content:
-                    yield response.audio_content
-
-        except Exception as e:
-            print(f"Error in Streaming TTS: {e}")
-            pass
-
-    return app.response_class(generate(), mimetype='audio/mpeg')
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
