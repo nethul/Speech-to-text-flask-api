@@ -142,19 +142,42 @@ def text_to_speech():
         print(f"Error in TTS: {e}")
         return jsonify({'error': str(e)}), 500
 
+import uuid
+
+# ... (existing imports)
+
+# Simple in-memory cache for streaming text
+STREAM_CACHE = {}
+
 @app.route('/stream_tts', methods=['POST'])
-def stream_text_to_speech():
+def init_stream_tts():
     data = request.get_json()
     if not data or 'text' not in data:
         return jsonify({'error': 'No text provided'}), 400
     
     text = data['text']
+    stream_id = str(uuid.uuid4())
+    STREAM_CACHE[stream_id] = text
+    
+    return jsonify({'streamId': stream_id})
+
+@app.route('/stream_tts/<stream_id>', methods=['GET'])
+def stream_audio(stream_id):
+    text = STREAM_CACHE.get(stream_id)
+    if not text:
+        return jsonify({'error': 'Stream ID not found or expired'}), 404
+
+    # Optional: Remove from cache immediately or use a better expiration strategy
+    # For now, we keep it to allow retries or multiple chunks if needed, 
+    # but strictly this should be managed. 
+    # To prevent memory leaks in a real app, use a TTL cache (e.g. cachetools).
+    # For this demo, we'll pop it to keep memory clean, assuming one-time play.
+    STREAM_CACHE.pop(stream_id, None)
 
     def generate():
         try:
             client = get_tts_client()
             
-            # Use the same voice as the standard TTS
             streaming_config = texttospeech.StreamingSynthesizeConfig(
                 voice=texttospeech.VoiceSelectionParams(
                     language_code="si-LK",
@@ -164,11 +187,9 @@ def stream_text_to_speech():
             )
 
             def request_generator():
-                # First request must contain config
                 yield texttospeech.StreamingSynthesizeRequest(
                     streaming_config=streaming_config
                 )
-                # Subsequent requests contain text
                 yield texttospeech.StreamingSynthesizeRequest(
                     input=texttospeech.StreamingSynthesisInput(text=text)
                 )
@@ -181,8 +202,6 @@ def stream_text_to_speech():
 
         except Exception as e:
             print(f"Error in Streaming TTS: {e}")
-            # In a generator, we can't easily return a JSON error response once streaming starts
-            # But we can log it.
             pass
 
     return app.response_class(generate(), mimetype='audio/mpeg')
