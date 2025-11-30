@@ -67,7 +67,7 @@ def transcribe_audio():
         config = speech_v2.types.RecognitionConfig(
             auto_decoding_config=speech_v2.types.AutoDetectDecodingConfig(),
             language_codes=["si-LK"],
-            model="long",
+            model="short",
         )
         
         request_obj = speech_v2.types.RecognizeRequest(
